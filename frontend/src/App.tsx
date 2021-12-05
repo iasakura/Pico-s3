@@ -1,18 +1,34 @@
-import React, { useState } from "react";
-import { saveAs } from "file-saver";
-import JSZip from "jszip";
-
 import {
-  useQuery,
-  gql,
   ApolloClient,
   ApolloProvider,
   InMemoryCache,
-  NormalizedCacheObject,
-} from "@apollo/client";
+  gql,
+  useLazyQuery,
+  useQuery,
+} from '@apollo/client';
+import { saveAs } from 'file-saver';
+import JSZip from 'jszip';
+import React, { useState } from 'react';
+
+const LIST_FILES = gql`
+  query Query {
+    listFiles {
+      id
+      name
+      fileSize
+      createDate
+    }
+  }
+`;
+
+const GET_FILE = gql`
+  query Query($id: String) {
+    getFile(id: $id)
+  }
+`;
 
 const client = new ApolloClient({
-  uri: "http://localhost:5000/",
+  uri: 'http://localhost:5000/',
   cache: new InMemoryCache(),
 });
 
@@ -47,20 +63,18 @@ function FileLists(props: {
     createDate: string;
     checked: boolean;
   }[];
-  onClick: (id: string) => void;
+  onCheckBoxChange: (id: string) => void;
 }) {
-  const files = props.fileList.map((file) => {
-    return (
-      <FileEntry
-        fileName={file.name}
-        key={file.id}
-        fileSize={file.fileSize}
-        createDate={file.createDate}
-        checked={file.checked}
-        onClick={() => props.onClick(file.id)}
-      />
-    );
-  });
+  const files = props.fileList.map((file) => (
+    <FileEntry
+      fileName={file.name}
+      key={file.id}
+      fileSize={file.fileSize}
+      createDate={file.createDate}
+      checked={file.checked}
+      onClick={() => props.onCheckBoxChange(file.id)}
+    />
+  ));
 
   return (
     <table>
@@ -77,7 +91,7 @@ function FileLists(props: {
   );
 }
 
-function b64toBlob(b64Data: string, contentType = "", sliceSize = 512) {
+function b64toBlob(b64Data: string, contentType = '', sliceSize = 512) {
   const byteCharacters = atob(b64Data);
   const byteArrays = [];
 
@@ -97,78 +111,56 @@ function b64toBlob(b64Data: string, contentType = "", sliceSize = 512) {
   return blob;
 }
 
-function downloadFiles(
-  client: ApolloClient<NormalizedCacheObject>,
-  selected: string[],
-  files: {
-    id: string;
-    name: string;
-    fileSize: number;
-    createDate: string;
-    checked: boolean;
-  }[]
-) {
-  const query = gql`
-    query Query($id: String) {
-      getFile(id: $id)
-    }
-  `;
-
-  if (selected.length === 0) {
+function downloadFiles(files: [string, string][]) {
+  if (files.length === 0) {
     return;
-  } else if (selected.length === 1) {
-    let id = selected[0];
-
-    let name = files.find((file) => id === file.id)?.name as string;
-    client.query({ query: query, variables: { id: id } }).then((result) => {
-      // TODO: Fix MIME type
-      let blob = b64toBlob(result.data.getFile, "text/plain");
-      saveAs(blob, name);
-    });
+  } else if (files.length === 1) {
+    let [name, data] = files[0];
+    let blob = b64toBlob(data, 'text/plain');
+    saveAs(blob, name);
   } else {
-    let promises = selected.map((id): Promise<[Blob, string]> => {
-      const name = files.find((file) => file.id === id)?.name as string;
-      return client
-        .query({ query: query, variables: { id: id } })
-        .then((result) => {
-          // base 64 encoded text and its file name
-          return [result.data.getFile, name];
-        });
+    const zip = new JSZip();
+    files.forEach(([name, data]) => {
+      zip.file(name, data, { base64: true });
     });
-    Promise.all(promises).then((result) => {
-      const zip = new JSZip();
-      result.forEach(([text, name]) => {
-        zip.file(name, text, { base64: true });
-      });
-      zip.generateAsync({ type: "blob" }).then((content) => {
-        saveAs(content, "download.zip");
-      });
+    zip.generateAsync({ type: 'blob' }).then((content) => {
+      saveAs(content, 'download.zip');
     });
   }
 }
 
 function AppLocal() {
-  let query = gql`
-    query Query {
-      listFiles {
-        id
-        name
-        fileSize
-        createDate
-      }
-    }
-  `;
+  let {
+    loading: listFilesLoading,
+    error: listFilesError,
+    data: filesData,
+    refetch: listFilesRefetch,
+  } = useQuery(LIST_FILES);
+  let [getFile, { loading: getFileLoading, error: getFileError }] =
+    useLazyQuery(GET_FILE);
+  let [selected, setSelected] = useState(new Set<string>());
 
-  let { loading, error, data, refetch } = useQuery(query);
-  let [selected, setSelected] = useState<Set<string>>(new Set());
-
-  if (error) {
-    return <p> Error occured: {error} </p>;
-  } else if (loading) {
+  if (listFilesError || getFileError) {
+    return <p> Error occured: {listFilesError} </p>;
+  } else if (listFilesLoading || getFileLoading) {
     return <p> Now loading... </p>;
   }
 
-  let handleClick = (id: string) => {
+  // List of all files
+  let fileList = filesData.listFiles.map(
+    (file: {
+      id: string;
+      name: string;
+      fileSize: number;
+      createDate: string;
+      checked: boolean;
+    }) => {
+      return { ...file, checked: selected.has(file.id) };
+    },
+  );
+
+  // Toggle clicked checkbox
+  let updateSelected = (id: string) => {
     if (selected.has(id)) {
       const new_selected = new Set(selected);
       new_selected.delete(id);
@@ -180,30 +172,25 @@ function AppLocal() {
     }
   };
 
-  let fileList = data.listFiles.map(
-    (file: {
-      id: string;
-      name: string;
-      fileSize: number;
-      createDate: string;
-      checked: boolean;
-    }) => {
-      return { ...file, checked: selected.has(file.id) };
-    }
-  );
-
-  let table = <FileLists fileList={fileList} onClick={handleClick} />;
-
   let download = () => {
-    downloadFiles(client, Array.from(selected), fileList);
+    Promise.all(
+      Array.from(selected).map((id) => {
+        let name = fileList.find((file: { id: string }) => id === file.id)
+          ?.name as string;
+        return getFile({ variables: { id: id } }).then(
+          (result): [string, string] => [name, result.data.getFile],
+        );
+      }),
+    ).then((files: [string, string][]) => downloadFiles(files));
   };
 
   let remove = () => {
-    alert("remove");
+    // TODO: implement
+    alert('remove');
   };
 
   let refresh = () => {
-    refetch();
+    listFilesRefetch();
   };
 
   return (
@@ -211,7 +198,7 @@ function AppLocal() {
       <button onClick={download}>download</button>
       <button onClick={remove}>remove</button>
       <button onClick={refresh}>reflesh</button>
-      {table}
+      <FileLists fileList={fileList} onCheckBoxChange={updateSelected} />
     </div>
   );
 }
