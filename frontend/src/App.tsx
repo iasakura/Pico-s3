@@ -4,11 +4,14 @@ import {
   InMemoryCache,
   gql,
   useLazyQuery,
+  useMutation,
   useQuery,
 } from '@apollo/client';
 import { saveAs } from 'file-saver';
 import JSZip from 'jszip';
 import React, { useState } from 'react';
+
+import * as util from './util';
 
 const LIST_FILES = gql`
   query Query {
@@ -24,6 +27,18 @@ const LIST_FILES = gql`
 const GET_FILE = gql`
   query Query($id: String) {
     getFile(id: $id)
+  }
+`;
+
+const PUT_FILE = gql`
+  mutation Mutation($name: String, $contents: String) {
+    putFile(name: $name, contents: $contents)
+  }
+`;
+
+const REMOVE_FILE = gql`
+  mutation Mutation($id: String) {
+    removeFile(id: $id)
   }
 `;
 
@@ -91,32 +106,12 @@ function FileLists(props: {
   );
 }
 
-function b64toBlob(b64Data: string, contentType = '', sliceSize = 512) {
-  const byteCharacters = atob(b64Data);
-  const byteArrays = [];
-
-  for (let offset = 0; offset < byteCharacters.length; offset += sliceSize) {
-    const slice = byteCharacters.slice(offset, offset + sliceSize);
-
-    const byteNumbers = new Array(slice.length);
-    for (let i = 0; i < slice.length; i++) {
-      byteNumbers[i] = slice.charCodeAt(i);
-    }
-
-    const byteArray = new Uint8Array(byteNumbers);
-    byteArrays.push(byteArray);
-  }
-
-  const blob = new Blob(byteArrays, { type: contentType });
-  return blob;
-}
-
 function downloadFiles(files: [string, string][]) {
   if (files.length === 0) {
     return;
   } else if (files.length === 1) {
     let [name, data] = files[0];
-    let blob = b64toBlob(data, 'text/plain');
+    let blob = util.b64toBlob(data, 'text/plain');
     saveAs(blob, name);
   } else {
     const zip = new JSZip();
@@ -139,10 +134,23 @@ function AppLocal() {
   let [getFile, { loading: getFileLoading, error: getFileError }] =
     useLazyQuery(GET_FILE);
   let [selected, setSelected] = useState(new Set<string>());
+  let [putFile, { loading: putFileLoading, error: putFileError }] =
+    useMutation(PUT_FILE);
+  let [removeFile, { loading: removeFileLoading, error: removeFileError }] =
+    useMutation(REMOVE_FILE);
 
-  if (listFilesError || getFileError) {
-    return <p> Error occured: {listFilesError} </p>;
-  } else if (listFilesLoading || getFileLoading) {
+  let any_error =
+    listFilesError || getFileError || putFileError || removeFileError;
+  let any_loading =
+    listFilesLoading || getFileLoading || putFileLoading || removeFileLoading;
+  if (any_error) {
+    return (
+      <p>
+        Error occurred:
+        {any_error?.message}
+      </p>
+    );
+  } else if (any_loading) {
     return <p> Now loading... </p>;
   }
 
@@ -172,32 +180,58 @@ function AppLocal() {
     }
   };
 
-  let download = () => {
-    Promise.all(
+  const download = async () => {
+    await Promise.all(
       Array.from(selected).map((id) => {
         let name = fileList.find((file: { id: string }) => id === file.id)
           ?.name as string;
         return getFile({ variables: { id: id } }).then(
-          (result): [string, string] => [name, result.data.getFile],
+          (result): [string, string] => {
+            return [name, result.data.getFile];
+          },
         );
       }),
     ).then((files: [string, string][]) => downloadFiles(files));
   };
 
-  let remove = () => {
-    // TODO: implement
-    alert('remove');
+  const remove = async () => {
+    await Promise.all(
+      Array.from(selected).map((id) => removeFile({ variables: { id: id } })),
+    );
+    setSelected(new Set());
+    await listFilesRefetch();
   };
 
-  let refresh = () => {
+  const refresh = () => {
     listFilesRefetch();
   };
 
+  const dropHandler = async (ev: React.DragEvent<HTMLDivElement>) => {
+    ev.preventDefault();
+
+    for (let i = 0; i < ev.dataTransfer.items.length; ++i) {
+      const item = ev.dataTransfer.items[i];
+      const file = item.getAsFile();
+      if (file !== null) {
+        let b64contents = await util.blobToB64(file);
+        let name = file.name;
+
+        await putFile({ variables: { name: name, contents: b64contents } });
+      }
+    }
+
+    await listFilesRefetch();
+  };
+
+  const dragHandler = (ev: React.DragEvent<HTMLDivElement>) => {
+    ev.preventDefault();
+  };
+
   return (
-    <div id="root">
+    <div id="app" onDrop={dropHandler} onDragOver={dragHandler}>
       <button onClick={download}>download</button>
       <button onClick={remove}>remove</button>
-      <button onClick={refresh}>reflesh</button>
+      <button onClick={refresh}>refresh</button>
       <FileLists fileList={fileList} onCheckBoxChange={updateSelected} />
     </div>
   );

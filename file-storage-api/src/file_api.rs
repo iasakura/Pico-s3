@@ -71,8 +71,7 @@ impl Query {
         let row = rows
             .get(0)
             .ok_or(format!("No file found for id = {}.", id))?;
-        let contents = std::str::from_utf8(row)?;
-        let encoded = base64::encode(contents);
+        let encoded = base64::encode(row);
         Ok(encoded)
     }
 }
@@ -95,6 +94,15 @@ impl Mutation {
         )?;
 
         Ok(uuid.to_string())
+    }
+
+    async fn remove_file(&self, ctx: &Context<'_>, id: String) -> Result<String> {
+        let db_path = ctx.data::<PathBuf>()?;
+        let conn = Connection::open(db_path)?;
+
+        conn.execute("DELETE FROM storage WHERE id = ?1;", rusqlite::params![id])?;
+
+        Ok(id)
     }
 }
 
